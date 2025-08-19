@@ -10,8 +10,9 @@ BASE_URL = "https://api.schwabapi.com"
 
 
 class Client:
-    def __init__(self, app_key, app_secret, callback_url="https://127.0.0.1", tokens_file="tokens.json", timeout=10, capture_callback=False, use_session=True, call_on_notify=None):
-        
+    @classmethod
+    async def initialize(cls, app_key, app_secret, callback_url="https://127.0.0.1", tokens_file="tokens.json", timeout=10, capture_callback=False, use_session=True, call_on_notify=None):
+
         """
         Initialize a client to access the Schwab API.
 
@@ -26,6 +27,7 @@ class Client:
             call_on_notify (function | None): Function to call when user needs to be notified (e.g. for input)
         """
 
+        self = cls()  # create an instance of the class
         # other checks are done in the tokens class
         if timeout <= 0:
             raise Exception("Timeout must be greater than 0 and is recommended to be 5 seconds or more.")
@@ -34,7 +36,7 @@ class Client:
         self.timeout = timeout                                              # timeout to use in requests
         self.logger = logging.getLogger("Schwabdev")                        # init the logger
         self._session = aiohttp.ClientSession() if use_session else aiohttp.request   # session to use in requests
-        self.tokens = Tokens(self, app_key, app_secret, callback_url, tokens_file, capture_callback, call_on_notify)
+        self.tokens = await Tokens.initialize(self, app_key, app_secret, callback_url, tokens_file, capture_callback, call_on_notify)
         self.stream = Stream(self)                                          # init the streaming object
 
         # Spawns a task to check the tokens and updates if necessary, also updates the session
@@ -46,6 +48,8 @@ class Client:
 
         asyncio.create_task(checker())  # Start the token checker in the background
         self.logger.info("Client Initialization Complete")
+
+        return self  # return the client instance
 
 
     async def __aenter__(self):

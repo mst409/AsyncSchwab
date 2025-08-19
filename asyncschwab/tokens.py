@@ -7,15 +7,16 @@ import os
 import ssl
 import json
 import base64
-import logging
-import requests
+import aiohttp
+import aiofiles
 import datetime
 import webbrowser
 import http.server
 
 
 class Tokens:
-    def __init__(self, client, app_key, app_secret, callback_url, tokens_file="tokens.json", capture_callback=False, call_on_notify=None):
+    @classmethod
+    async def initialize(cls, client, app_key, app_secret, callback_url, tokens_file="tokens.json", capture_callback=False, call_on_notify=None):
         """
         Initialize a tokens manager
 
@@ -28,6 +29,8 @@ class Tokens:
             capture_callback (bool): Use a webserver with self-signed cert to callback
             call_on_notify (function | None): Function to call when user needs to be notified (e.g. for input)
         """
+
+        self = cls()  # create an instance of the class
 
         if app_key is None:
             raise Exception("[Schwabdev] app_key cannot be None.")
@@ -66,8 +69,8 @@ class Tokens:
         self.call_on_notify = call_on_notify                    # function to call when user needs to be notified (e.g. for input)
 
         try:
-            with open(self._tokens_file, 'r') as f: # Load tokens if the file exists.
-                d = json.load(f)
+            with aiofiles.open(self._tokens_file, 'r') as f: # Load tokens if the file exists.
+                d = await json.load(f)
                 token_dictionary = d.get("token_dictionary")
                 self.access_token = token_dictionary.get("access_token")
                 self.refresh_token = token_dictionary.get("refresh_token")
@@ -75,7 +78,7 @@ class Tokens:
                 self._access_token_issued = datetime.datetime.fromisoformat(d.get("access_token_issued")).replace(tzinfo=datetime.timezone.utc)
                 self._refresh_token_issued = datetime.datetime.fromisoformat(d.get("refresh_token_issued")).replace(tzinfo=datetime.timezone.utc)
 
-                self.update_tokens()  # check if tokens need to be updated and update if needed
+                await self.update_tokens()  # check if tokens need to be updated and update if needed
                 at_delta = self._access_token_timeout - (datetime.datetime.now(datetime.timezone.utc) - self._access_token_issued).total_seconds()
                 rt_delta = self._refresh_token_timeout - (datetime.datetime.now(datetime.timezone.utc) - self._refresh_token_issued).total_seconds()
                 self._client.logger.info(f"Access token expires in {'-' if at_delta < 0 else ''}{int(abs(at_delta) / 3600):02}H:{int((abs(at_delta) % 3600) / 60):02}M:{int((abs(at_delta) % 60)):02}S")
@@ -85,9 +88,11 @@ class Tokens:
             self._client.logger.error(e)
             self._client.logger.warning(f"Token file does not exist or invalid formatting, creating \"{str(tokens_file)}\"")
             # Tokens must be updated.
-            self.update_refresh_token()
+            await self.update_refresh_token()
 
-    def _post_oauth_token(self, grant_type: str, code: str):
+        return self  # return the tokens instance
+
+    async def _post_oauth_token(self, grant_type: str, code: str):
         """
         Makes API calls for auth code and refresh tokens
 
@@ -96,7 +101,7 @@ class Tokens:
             code (str): authorization code
 
         Returns:
-            requests.Response
+            aiohttp.ClientResponse
         """
         headers = {'Authorization': f'Basic {base64.b64encode(bytes(f"{self._app_key}:{self._app_secret}", "utf-8")).decode("utf-8")}',
                    'Content-Type': 'application/x-www-form-urlencoded'}
@@ -109,9 +114,10 @@ class Tokens:
                     'refresh_token': code}
         else:
             raise Exception("Invalid grant type; options are 'authorization_code' or 'refresh_token'")
-        return requests.post('https://api.schwabapi.com/v1/oauth/token', headers=headers, data=data)
+        async with aiohttp.ClientSession().post('https://api.schwabapi.com/v1/oauth/token', headers=headers, data=data) as resp:
+            return await resp
 
-    def _set_tokens(self, at_issued: datetime, rt_issued: datetime, token_dictionary: dict):
+    async def _set_tokens(self, at_issued: datetime, rt_issued: datetime, token_dictionary: dict):
         """
         Writes token file and sets variables
 
@@ -129,17 +135,17 @@ class Tokens:
         self._access_token_issued = at_issued
         self._refresh_token_issued = rt_issued
         try:
-            with open(self._tokens_file, 'w') as f:
+            async with aiofiles.open(self._tokens_file, 'w') as f:
                 to_write = {"access_token_issued": at_issued.isoformat(),
                             "refresh_token_issued": rt_issued.isoformat(),
                             "token_dictionary": token_dictionary}
-                json.dump(to_write, f, ensure_ascii=False, indent=4)
+                await f.write(await json.dumps(to_write, ensure_ascii=False, indent=4))
         except Exception as e:
             self._client.logger.error(e)
             self._client.logger.error("Could not write tokens file")
 
 
-    def update_tokens(self, force_access_token=False, force_refresh_token=False):
+    async def update_tokens(self, force_access_token=False, force_refresh_token=False):
         """
         Checks if tokens need to be updated and updates if needed (only access token is automatically updated)
 
@@ -150,10 +156,10 @@ class Tokens:
         Returns:
             bool: True if tokens were updated and False otherwise
         """
-        def call_notifier(message, importance=0):
+        async def call_notifier(message, importance=0):
             if callable(self.call_on_notify):
                 try:
-                    self.call_on_notify(message=message, importance=importance)
+                    await self.call_on_notify(message=message, importance=importance)
                 except Exception as e:
                     self._client.logger.error(e)
 
@@ -168,13 +174,13 @@ class Tokens:
         # check if we need to update refresh (and access) token
         if (rt_delta < 1800) or force_refresh_token:
             self._client.logger.warning("The refresh token has expired!")
-            call_notifier(message="Input required for refresh token", importance=0)
-            self.update_refresh_token()
+            await call_notifier(message="Input required for refresh token", importance=0)
+            await self.update_refresh_token()
             return True
         # check if we need to update access token
         elif (at_delta < 61) or force_access_token:
             self._client.logger.info("The access token has expired, updating automatically.")
-            self.update_access_token()
+            await self.update_access_token()
             return True
         else:
             return False
@@ -183,15 +189,15 @@ class Tokens:
         Access Token functions:
     """
 
-    def update_access_token(self):
+    async def update_access_token(self):
         """
         "refresh" the access token using the refresh token
         """
-        response = self._post_oauth_token('refresh_token', self.refresh_token)
+        response = await self._post_oauth_token('refresh_token', self.refresh_token)
         if response.ok:
             # get and update to the new access token
             at_issued = datetime.datetime.now(datetime.timezone.utc)
-            self._set_tokens(at_issued, self._refresh_token_issued, response.json())
+            await self._set_tokens(at_issued, self._refresh_token_issued, response.json())
             # show user that we have updated the access token
             self._client.logger.info(f"Access token updated: {self._access_token_issued}")
         else:
@@ -202,7 +208,7 @@ class Tokens:
         Refresh Token functions:
     """
 
-    def _generate_certificate(self, common_name="common_name", key_filepath="localhost.key", cert_filepath="localhost.crt"):
+    async def _generate_certificate(self, common_name="common_name", key_filepath="localhost.key", cert_filepath="localhost.crt"):
         """
         Generate a self-signed certificate for use in capturing the callback during authentication
 
@@ -247,17 +253,16 @@ class Tokens:
             critical=False,
         )
         builder = builder.sign(key, hashes.SHA256())
-        with open(key_filepath, "wb") as f:
-            f.write(key.private_bytes(encoding=serialization.Encoding.PEM,
+        with aiofiles.open(key_filepath, "wb") as f:
+            await f.write(key.private_bytes(encoding=serialization.Encoding.PEM,
                                       format=serialization.PrivateFormat.TraditionalOpenSSL,
                                       encryption_algorithm=serialization.NoEncryption()))
-        with open(cert_filepath, "wb") as f:
-            f.write(builder.public_bytes(serialization.Encoding.PEM))
+        with aiofiles.open(cert_filepath, "wb") as f:
+            await f.write(builder.public_bytes(serialization.Encoding.PEM))
         self._client.logger.info(f"Certificate generated and saved to {key_filepath} and {cert_filepath}")
 
 
-
-    def _update_refresh_token_from_code(self, url_or_code):
+    async def _update_refresh_token_from_code(self, url_or_code):
         """
         Get new access and refresh tokens using callback url or authorization code.
 
@@ -271,10 +276,10 @@ class Tokens:
             code = url_or_code
         # get new access and refresh tokens
         now = datetime.datetime.now(datetime.timezone.utc)
-        response = self._post_oauth_token('authorization_code', code)
+        response = await self._post_oauth_token('authorization_code', code)
         if response.ok:
             # update token file and variables
-            self._set_tokens(now, now, response.json())
+            await self._set_tokens(now, now, response.json())
             self._client.logger.info("Refresh and Access tokens updated")
         else:
             self._client.logger.error(response.text)
@@ -327,7 +332,7 @@ class Tokens:
         httpd.server_close()
         return shared.code
 
-    def     update_refresh_token(self):
+    async def update_refresh_token(self):
         """
         Get new access and refresh tokens using authorization code.
         """
