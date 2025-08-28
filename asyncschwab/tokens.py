@@ -69,8 +69,9 @@ class Tokens:
         self.call_on_notify = call_on_notify                    # function to call when user needs to be notified (e.g. for input)
 
         try:
-            with aiofiles.open(self._tokens_file, 'r') as f: # Load tokens if the file exists.
-                d = await json.load(f)
+            async with aiofiles.open(self._tokens_file, 'r') as f: # Load tokens if the file exists.
+                content = await f.read()
+                d = json.loads(content)
                 token_dictionary = d.get("token_dictionary")
                 self.access_token = token_dictionary.get("access_token")
                 self.refresh_token = token_dictionary.get("refresh_token")
@@ -115,7 +116,10 @@ class Tokens:
         else:
             raise Exception("Invalid grant type; options are 'authorization_code' or 'refresh_token'")
         async with aiohttp.ClientSession().post('https://api.schwabapi.com/v1/oauth/token', headers=headers, data=data) as resp:
-            return await resp
+            if 200 <= resp.status < 300:
+                return await resp.json()
+            else:
+                return await resp.text()
 
     async def _set_tokens(self, at_issued: datetime, rt_issued: datetime, token_dictionary: dict):
         """
@@ -194,14 +198,14 @@ class Tokens:
         "refresh" the access token using the refresh token
         """
         response = await self._post_oauth_token('refresh_token', self.refresh_token)
-        if response.ok:
+        if isinstance(response, dict):
             # get and update to the new access token
             at_issued = datetime.datetime.now(datetime.timezone.utc)
-            await self._set_tokens(at_issued, self._refresh_token_issued, response.json())
+            await self._set_tokens(at_issued, self._refresh_token_issued, response)
             # show user that we have updated the access token
             self._client.logger.info(f"Access token updated: {self._access_token_issued}")
         else:
-            self._client.logger.error(response.text)
+            self._client.logger.error(response)
             self._client.logger.error(f"Could not get new access token; refresh_token likely invalid.")
 
     """
@@ -253,11 +257,11 @@ class Tokens:
             critical=False,
         )
         builder = builder.sign(key, hashes.SHA256())
-        with aiofiles.open(key_filepath, "wb") as f:
+        async with aiofiles.open(key_filepath, "wb") as f:
             await f.write(key.private_bytes(encoding=serialization.Encoding.PEM,
                                       format=serialization.PrivateFormat.TraditionalOpenSSL,
                                       encryption_algorithm=serialization.NoEncryption()))
-        with aiofiles.open(cert_filepath, "wb") as f:
+        async with aiofiles.open(cert_filepath, "wb") as f:
             await f.write(builder.public_bytes(serialization.Encoding.PEM))
         self._client.logger.info(f"Certificate generated and saved to {key_filepath} and {cert_filepath}")
 
@@ -277,12 +281,12 @@ class Tokens:
         # get new access and refresh tokens
         now = datetime.datetime.now(datetime.timezone.utc)
         response = await self._post_oauth_token('authorization_code', code)
-        if response.ok:
+        if isinstance(response, dict):
             # update token file and variables
-            await self._set_tokens(now, now, response.json())
+            await self._set_tokens(now, now, response)
             self._client.logger.info("Refresh and Access tokens updated")
         else:
-            self._client.logger.error(response.text)
+            self._client.logger.error(response)
             self._client.logger.error("Could not get new refresh and access tokens, check these:\n"
                                "1. App status is \"Ready For Use\".\n"
                                "2. App key and app secret are valid.\n"

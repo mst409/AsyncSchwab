@@ -6,10 +6,11 @@ import urllib.parse
 from .stream import Stream
 from .tokens import Tokens
 
-BASE_URL = "https://api.schwabapi.com"
-
 
 class Client:
+
+    BASE_URL = "https://api.schwabapi.com"
+
     @classmethod
     async def initialize(cls, app_key, app_secret, callback_url="https://127.0.0.1", tokens_file="tokens.json", timeout=10, capture_callback=False, use_session=True, call_on_notify=None):
 
@@ -42,7 +43,9 @@ class Client:
         # Spawns a task to check the tokens and updates if necessary, also updates the session
         async def checker():
             while True:
-                if self.tokens.update_tokens() and use_session:
+                # up_to_date = await asyncio.to_thread(self.tokens.update_tokens)
+                up_to_date = await self.tokens.update_tokens()
+                if up_to_date and use_session:
                     self._session = aiohttp.ClientSession() #make a new session if the access token was updated
                 await asyncio.sleep(30)
 
@@ -507,7 +510,7 @@ class Client:
                                                             'needExtendedHoursData': needExtendedHoursData,
                                                             'needPreviousClose': needPreviousClose}),
                                 timeout=self.timeout) as resp:
-                return await resp
+                return await resp.json()
 
     async def movers(self, symbol: str, sort: str = None, frequency: any = None) -> aiohttp.ClientResponse:
             """
