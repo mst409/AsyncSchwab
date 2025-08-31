@@ -3,6 +3,10 @@
 
 > **Request for Help:** Contributions, suggestions, and feedback are welcome! If you'd like to help improve Asyncschwab, please open an issue or submit a pull request.
 
+> **Status Update:** As of now, the `main` branch is fully functional.
+>
+> **How It Works:** The tokens file operations remain fully blocking for simplicity and reliability, while only the API calls made through the `Client` class are asynchronous.
+
 Asyncschwab is an asynchronous rewrite of the original [schwabdev](https://github.com/tylerebowers/Schwabdev) repository. This project aims to improve performance and scalability by leveraging Python's `async` and `await` features.
 
 ## Features
