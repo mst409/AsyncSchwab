@@ -6,10 +6,11 @@ import urllib.parse
 from .stream import Stream
 from .tokens import Tokens
 
-BASE_URL = "https://api.schwabapi.com"
-
 
 class Client:
+
+    BASE_URL = "https://api.schwabapi.com"
+    
     def __init__(self, app_key, app_secret, callback_url="https://127.0.0.1", tokens_file="tokens.json", timeout=10, capture_callback=False, use_session=True, call_on_notify=None):
         
         """
@@ -37,25 +38,28 @@ class Client:
         self.tokens = Tokens(self, app_key, app_secret, callback_url, tokens_file, capture_callback, call_on_notify)
         self.stream = Stream(self)                                          # init the streaming object
 
-        # Spawns a task to check the tokens and updates if necessary, also updates the session
-        async def checker():
-            while True:
-                if self.tokens.update_tokens() and use_session:
-                    self._session = aiohttp.ClientSession() #make a new session if the access token was updated
-                await asyncio.sleep(30)
-
-        asyncio.create_task(checker())  # Start the token checker in the background
         self.logger.info("Client Initialization Complete")
 
 
+    # Function to check the tokens and updates if necessary, also updates the session
+    async def checker(self):
+        while True:
+            if self.tokens.update_tokens() and self.use_session:
+                self._session = aiohttp.ClientSession() #make a new session if the access token was updated
+            await asyncio.sleep(30)
+
     async def __aenter__(self):
+        self._task_group = asyncio.TaskGroup()
+        await self._task_group.__aenter__()
+        self._checker_task = self._task_group.create_task(self.checker()) # Start the token checker in the background
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.exit()
-
-    async def exit(self):
+        self._checker_task.cancel()
+        retval = await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
         await self._session.close()
+        return retval
+
 
     def _params_parser(self, params: dict):
             """
@@ -121,7 +125,25 @@ class Client:
             return ",".join(l)
         else:
             return l
-        
+
+    async def _response_type_handler(self, response: aiohttp.ClientResponse) -> str | dict | bytes:
+        """
+        Handle the response from the API and return the content type (json, text, or binary).
+
+        Args:
+            resp (aiohttp.ClientResponse): The response object from the API call.
+
+        Returns:
+            str | dict | bytes: The content of the response based on its type.
+        """
+        if response.headers.get("content-type") == "application/json":
+            return await response.json()
+        elif response.headers.get("content-type") == "text/html":
+            return await response.text()
+        else:
+            return await response.read()
+
+
     """
     Accounts and Trading Production
     """
@@ -137,7 +159,7 @@ class Client:
         async with self._session.get(f'{self.BASE_URL}/trader/v1/accounts/accountNumbers',
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def account_details_all(self, fields: str = None) -> aiohttp.ClientResponse:
         """
@@ -153,7 +175,7 @@ class Client:
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             params=self._params_parser({'fields': fields}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
         
     async def account_details(self, accountHash: str, fields: str = None) -> aiohttp.ClientResponse:
         """
@@ -170,7 +192,7 @@ class Client:
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             params=self._params_parser({'fields': fields}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def account_orders(self, accountHash: str, 
                              fromEnteredTime: datetime.datetime | str, 
@@ -197,7 +219,7 @@ class Client:
                                  'toEnteredTime': self._time_convert(toEnteredTime, "8601"),
                                  'status': status}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def order_place(self, accountHash: str, order: dict) -> aiohttp.ClientResponse:
         """
@@ -216,7 +238,7 @@ class Client:
                                       "Content-Type": "application/json"},
                              json=order,
                              timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def order_details(self, accountHash: str, orderId: int | str) -> aiohttp.ClientResponse:
         """
@@ -232,7 +254,7 @@ class Client:
         async with self._session.get(f'{self.BASE_URL}/trader/v1/accounts/{accountHash}/orders/{orderId}',
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def order_cancel(self, accountHash: str, orderId: int | str) -> aiohttp.ClientResponse:
         """
@@ -248,7 +270,7 @@ class Client:
         async with self._session.delete(f'{self.BASE_URL}/trader/v1/accounts/{accountHash}/orders/{orderId}',
                                headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                                timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def order_replace(self, accountHash: str, orderId: int | str, order: dict) -> aiohttp.ClientResponse:
         """
@@ -268,7 +290,7 @@ class Client:
                                      "Content-Type": "application/json"},
                             json=order,
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def account_orders_all(self, fromEnteredTime: datetime.datetime | str, 
                                  toEnteredTime: datetime.datetime | str, 
@@ -293,7 +315,7 @@ class Client:
                                  'toEnteredTime': self._time_convert(toEnteredTime, "8601"),
                                  'status': status}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     """
     async def order_preview(self, accountHash: str, orderObject: dict) -> aiohttp.ClientResponse:
@@ -301,7 +323,7 @@ class Client:
         async with self._session.post(f'{self.BASE_URL}/trader/v1/accounts/{accountHash}/previewOrder',
                              headers={'Authorization': f'Bearer {self.tokens.access_token}',
                                       "Content-Type": "application.json"}, data=orderObject) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
     """
 
     async def transactions(self, accountHash: str, startDate: datetime.datetime | str, 
@@ -327,7 +349,7 @@ class Client:
                                  'symbol': symbol,
                                  'types': types}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def transaction_details(self, accountHash: str, transactionId: str | int) -> aiohttp.ClientResponse:
         """
@@ -343,7 +365,7 @@ class Client:
         async with self._session.get(f'{self.BASE_URL}/trader/v1/accounts/{accountHash}/transactions/{transactionId}',
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def preferences(self) -> aiohttp.ClientResponse:
         """
@@ -355,7 +377,7 @@ class Client:
         async with self._session.get(f'{self.BASE_URL}/trader/v1/userPreference',
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     """
     Market Data
@@ -380,8 +402,8 @@ class Client:
                                  'fields': fields,
                                  'indicative': indicative}),
                             timeout=self.timeout) as resp:
-            return await resp
-        
+            return await self._response_type_handler(resp)
+
     async def quote(self, symbol_id: str, fields: str = None) -> aiohttp.ClientResponse:
         """
         Get quote for a single symbol
@@ -397,8 +419,8 @@ class Client:
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             params=self._params_parser({'fields': fields}),
                             timeout=self.timeout) as resp:
-            return await resp
-        
+            return await self._response_type_handler(resp)
+
     async def option_chains(self, symbol: str, contractType: str = None, strikeCount: any = None, includeUnderlyingQuote: bool = None, strategy: str = None,
                interval: any = None, strike: any = None, range: str = None, fromDate: datetime.datetime | str = None, toDate: datetime.datetime | str = None, volatility: any = None, underlyingPrice: any = None,
                interestRate: any = None, daysToExpiration: any = None, expMonth: str = None, optionType: str = None, entitlement: str = None) -> aiohttp.ClientResponse:
@@ -454,7 +476,7 @@ class Client:
                                  'optionType': optionType,
                                  'entitlement': entitlement}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def option_expiration_chain(self, symbol: str) -> aiohttp.ClientResponse:
         """
@@ -470,7 +492,7 @@ class Client:
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             params=self._params_parser({'symbol': symbol}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
         
     async def price_history(self, symbol: str, periodType: str = None, period: any = None, frequencyType: str = None, frequency: any = None, startDate: datetime.datetime | str = None,
                         endDate: any = None, needExtendedHoursData: bool = None, needPreviousClose: bool = None) -> aiohttp.ClientResponse:
@@ -503,7 +525,7 @@ class Client:
                                                             'needExtendedHoursData': needExtendedHoursData,
                                                             'needPreviousClose': needPreviousClose}),
                                 timeout=self.timeout) as resp:
-                return await resp
+                return await self._response_type_handler(resp)
 
     async def movers(self, symbol: str, sort: str = None, frequency: any = None) -> aiohttp.ClientResponse:
             """
@@ -526,7 +548,7 @@ class Client:
                                 params=self._params_parser({'sort': sort,
                                                             'frequency': frequency}),
                                 timeout=self.timeout) as resp:
-                return await resp
+                return await self._response_type_handler(resp)
 
     async def market_hours(self, symbols: list[str], date: datetime.datetime | str = None) -> aiohttp.ClientResponse:
             """
@@ -545,7 +567,7 @@ class Client:
                                     {'markets': symbols, #self._format_list(symbols),
                                     'date': self._time_convert(date, 'YYYY-MM-DD')}),
                                 timeout=self.timeout) as resp:
-                return await resp
+                return await self._response_type_handler(resp)
 
     async def market_hour(self, market_id: str, date: datetime.datetime | str = None) -> aiohttp.ClientResponse:
         """
@@ -562,7 +584,7 @@ class Client:
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             params=self._params_parser({'date': self._time_convert(date, 'YYYY-MM-DD')}),
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def instruments(self, symbol: str, projection: str) -> aiohttp.ClientResponse:
         """
@@ -580,7 +602,7 @@ class Client:
                             params={'symbol': symbol,
                                     'projection': projection},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
 
     async def instrument_cusip(self, cusip_id: str | int) -> aiohttp.ClientResponse:
         """
@@ -595,4 +617,4 @@ class Client:
         async with self._session.get(f'{self.BASE_URL}/marketdata/v1/instruments/{cusip_id}',
                             headers={'Authorization': f'Bearer {self.tokens.access_token}'},
                             timeout=self.timeout) as resp:
-            return await resp
+            return await self._response_type_handler(resp)
