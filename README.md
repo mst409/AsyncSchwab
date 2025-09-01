@@ -9,6 +9,12 @@
 
 Asyncschwab is an asynchronous rewrite of the original [schwabdev](https://github.com/tylerebowers/Schwabdev) repository. This project aims to improve performance and scalability by leveraging Python's `async` and `await` features.
 
+> **New to the Schwab Trader API?**  
+> If you are new to the Charles Schwab Trader API, refer to the [schwabdev documentation](https://github.com/tylerebowers/Schwabdev) for general usage and API details. Since Asyncschwab is a rewrite of schwabdev, most concepts are similar, but there are some important differences:
+>
+> - **Boolean Values:** API parameters that require boolean values must be passed as strings (`"True"` or `"False"`), as mentioned below.
+> - **Response Types:** Response types are handled automatically in Asyncschwab, so you do not need to specify the desired response type at the end of function calls (e.g., `client.account_linked().json()` in schwabdev). Just call the method and await the result.
+
 ## Features
 
 - Fully async API calls
