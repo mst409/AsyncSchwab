@@ -15,6 +15,36 @@ Asyncschwab is an asynchronous rewrite of the original [schwabdev](https://githu
 - Improved concurrency handling
 - Modern Python async patterns
 
+## Example
+
+```python
+import asyncio
+from asyncschwab import Client
+
+async def main():
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    
+    async with Client(os.getenv("app_key"), os.getenv("app_secret"), os.getenv("callback_url")) as client:
+        async with asyncio.TaskGroup() as tg:
+            results = [tg.create_task(client.price_history(
+                i,
+                periodType="day",
+                period=1,
+                frequencyType="minute",
+                frequency=5,
+                needExtendedHoursData="False",
+                startDate=datetime(2025, 5, 5),
+                endDate=datetime(2025, 5, 6),
+            )) for i in tickers]
+
+        print([await result for result in results])
+
+asyncio.run(main())
+```
+
+> **Note:** For compatibility with `aiohttp`, boolean values in API parameters (such as `needExtendedHoursData`) must be passed as strings (`"True"` or `"False"`), not as Python `bool` types.  
+> For more details, see [Why isn't boolean supported by the URL query API?](https://github.com/aio-libs/yarl#why-isnt-boolean-supported-by-the-url-query-api).
+
 ### MIT License
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
